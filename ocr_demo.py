@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import subprocess
 from PIL import Image
 
-from ocr import OCREngine
+from ocr_deprec import OCREngine
 
 IMG = sys.argv[1]
 COLOR = {
