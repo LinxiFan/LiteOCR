@@ -2,7 +2,7 @@
 @author: jimfan
 '''
 import sys
-from ocr import OCREngine, load_img, draw_rect, draw_text, disp
+from liteocr import OCREngine, load_img, draw_rect, draw_text, disp
 
 engine = OCREngine(all_unicode=False)
 

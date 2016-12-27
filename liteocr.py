@@ -8,7 +8,6 @@ import numpy as np
 from PIL import Image
 from tesserocr import PyTessBaseAPI, RIL, PSM, image_to_text
 from collections import namedtuple
-from IPython import embed as REPL
 
 def is_PIL(img):
     return isinstance(img, Image.Image)
