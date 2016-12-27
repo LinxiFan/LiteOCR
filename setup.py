@@ -10,7 +10,7 @@ def read(fname):
 
 
 setup(name='liteocr',
-      version='0.1.0.post0',
+      version='0.2',
       author='Linxi (Jim) Fan',
       author_email='jimfan@cs.stanford.edu',
       url='http://github.com/LinxiFan/LiteOCR',
@@ -19,6 +19,11 @@ setup(name='liteocr',
       keywords='OCR image recognition wrapper Tesseract',
       license='GPLv3',
       packages=['liteocr'],
+      entry_points={
+        'console_scripts': [
+            'liteocr = liteocr.run_ocr:main'
+        ]
+      },
       classifiers=[
           "Development Status :: 3 - Alpha",
           "Topic :: Scientific/Engineering :: Image Recognition",

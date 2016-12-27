@@ -3,11 +3,18 @@ OCR API for Tesseract
 '''
 import os
 import sys
-import cv2
 import numpy as np
 from PIL import Image
 from tesserocr import PyTessBaseAPI, RIL, PSM, image_to_text
 from collections import namedtuple
+try:
+    import cv2
+except ImportError:
+    print('Please install OpenCV first. `pip install opencv-python` or '
+          '`yes | conda install -c https://conda.binstar.org/menpo opencv3` '
+          'if you use Anaconda. Make sure `import cv2` works after installation.', 
+          file=sys.stderr)
+    sys.exit(1)
 
 def is_PIL(img):
     return isinstance(img, Image.Image)
@@ -178,7 +185,7 @@ class OCREngine():
             remove all lines thinner than [thresh] pixels.
             can be used to remove the thin borders of web page textboxes. 
           conf_thresh (0 < _ < 100): 
-            remove all regions below [thresh] OCR confidence
+            ignore regions with OCR confidence < thresh.
           box_expand_factor (0.0 < _ < 1.0):
             expand the bounding box outwards in case certain chars are cutoff. 
           horizontal_pooling: 
