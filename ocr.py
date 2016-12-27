@@ -41,6 +41,7 @@ def save_img(img, filename):
 
 
 def draw_rect(img, x, y, w, h):
+    "Draw a red bounding box"
     cv2.rectangle(img, (x, y), (x+w, y+h), (255,0,255), 2)
     
 
@@ -50,15 +51,18 @@ def disp(img, pause=True):
     os.system('open _temp.png')
     if pause:
         input('continue ...')
+        
 
-
+# Bounding box
 Box = namedtuple('Box', ['x', 'y', 'w', 'h'])
+
+# Recognition result
+Blob = namedtuple('Blob', ['text', 'box', 'conf'])
 
 
 class OCREngine():
     def __init__(self, lang='eng'):
         self.tess = PyTessBaseAPI(psm=PSM.SINGLE_BLOCK, lang=lang)
-    
     
     def text_region(self, img, 
                     min_text_size=10,
@@ -75,12 +79,11 @@ class OCREngine():
           horizontal_morph_size: the larger the more connected, but shorter texts
               might be overlooked. Tradeoff between connectedness and recall. 
         """
-        img_init = img
-        img_bw = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        img_gray = img_bw
-        img_bw = cv2.adaptiveThreshold(img_bw,255,cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY,11,5)
-#         img_bw = cv2.cvtColor(img_bw, cv2.COLOR_GRAY2RGB)
-#         disp(img_bw, False); sys.exit(0)
+        img_init = img # preserve initial image
+        img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img_bw = cv2.adaptiveThreshold(img_gray, 255,
+                                       cv2.ADAPTIVE_THRESH_MEAN_C, 
+                                       cv2.THRESH_BINARY, 11, 5)
 
         img = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
         # http://docs.opencv.org/3.0-beta/doc/py_tutorials/py_imgproc/py_morphological_ops/py_morphological_ops.html
@@ -106,41 +109,72 @@ class OCREngine():
             if (uniformity > 1 - uniformity_cutoff 
                 or uniformity < uniformity_cutoff):
                 # ignore mostly white or black regions
-#                 disp(img_init[y:y+h,x:x+w, :])
                 continue
             # the image must be grayscale, otherwise Tesseract will SegFault
             # http://stackoverflow.com/questions/15606379/python-tesseract-segmentation-fault-11
             yield img_gray[y:y+h, x:x+w], Box(x, y, w, h)
-#             draw_rect(img_init, x,y,w,h)
-#         disp(img_init)
-
 
     
-    def recognize(self, filename, min_text_size=10, max_text_size=6000):
+    def recognize(self, filename, min_text_size=10, max_text_size=60):
         img = load_img(filename, 'np')
         idx = 0 
-        for region, global_box in self.text_region(img, 
-                                                   min_text_size=min_text_size,
-                                                   max_text_size=max_text_size):
-            
+        for region, outer_box in self.text_region(img, 
+                                                  min_text_size=min_text_size,
+                                                  max_text_size=max_text_size):
+            print(idx)
+#             if idx == 11: disp(region)
+            idx +=1
+            region = np2PIL(region)
+            with PyTessBaseAPI(psm=PSM.SINGLE_BLOCK) as self.tess:
+                self.tess.SetImage(region)
+                print(self.tess.GetUTF8Text(), self.tess.BoundingBox(RIL.TEXTLINE), self.tess.MeanTextConf())
+                continue
+    #             print('succesful set image', region.size)
+    #             print(image_to_text(region))
+    #             continue
+                components = self.tess.GetComponentImages(RIL.TEXTLINE, True)
+                print('Found {} textline image components.'.format(len(components)))
+                for _, inner_box, block_id, paragraph_id in components:
+                    # box is a dict with x, y, w and h keys
+                    inner_box = Box(**inner_box)
+                    if inner_box.w < min_text_size or inner_box.h < min_text_size:
+                        continue
+                    self.tess.SetRectangle(*inner_box)
+                    ocr_text = self.tess.GetUTF8Text().strip()
+                    conf = self.tess.MeanTextConf()
+                    # global coordinate in the image
+                    global_box = Box(outer_box.x + inner_box.x,
+                                     outer_box.y + inner_box.y,
+                                     inner_box.w, inner_box.h)
+    #                 yield Blob(ocr_text, global_box, conf)
+    
+    
+    def _deprec_recognize(self, filename, min_text_size=10, max_text_size=60):
+        img = load_img(filename, 'np')
+        idx = 0 
+        for region, outer_box in self.text_region(img, 
+                                                  min_text_size=min_text_size,
+                                                  max_text_size=max_text_size):
 #             print(idx)
-#             if idx == 9:
-#                 disp(region)
+#             if idx == 11: disp(region)
 #             idx +=1
             region = np2PIL(region)
             self.tess.SetImage(region)
-            print('succesful set image', region.size)
-            boxes = self.tess.GetComponentImages(RIL.TEXTLINE, True)
-            print('Found {} textline image components.'.format(len(boxes)))
-            for i, (_, box, block_id, paragraph_id) in enumerate(boxes):
+            components = self.tess.GetComponentImages(RIL.TEXTLINE, True)
+            print('Found {} textline image components.'.format(len(components)))
+            for _, inner_box, block_id, paragraph_id in components:
                 # box is a dict with x, y, w and h keys
-                self.tess.SetRectangle(*Box(**box))
-                ocrResult = self.tess.GetUTF8Text()
+                inner_box = Box(**inner_box)
+                if inner_box.w < min_text_size or inner_box.h < min_text_size:
+                    continue
+                self.tess.SetRectangle(*inner_box)
+                ocr_text = self.tess.GetUTF8Text().strip()
                 conf = self.tess.MeanTextConf()
-                print((u"Box[{0}]: x={x}, y={y}, w={w}, h={h}, "
-                       "confidence: {1}, text: {2}").format(i, conf, ocrResult, **box))
-                draw_rect(img, *global_box)
-#                 disp(img)
+                # global coordinate in the image
+                global_box = Box(outer_box.x + inner_box.x,
+                                 outer_box.y + inner_box.y,
+                                 inner_box.w, inner_box.h)
+                yield Blob(ocr_text, global_box, conf)
     
     
     def close(self):
@@ -158,4 +192,13 @@ class OCREngine():
 if __name__ == '__main__':
     engine = OCREngine()
 #     engine.text_region(load_img(sys.argv[1]))
-    engine.recognize(sys.argv[1])
+
+    if False:
+        engine.recognize(sys.argv[1])
+        sys.exit(0)
+
+    img = load_img(sys.argv[1])
+    for text, box, conf in engine._deprec_recognize(sys.argv[1]):
+        print(box, conf, '\t\t', text)
+        draw_rect(img, *box)
+    disp(img)
