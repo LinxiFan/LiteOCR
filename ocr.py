@@ -60,9 +60,48 @@ def get_np_img(obj):
                          .format(obj))
         
         
-def draw_rect(img, x, y, w, h):
+def crop(img, box):
+    """
+    Crop a numpy image with bounding box (x, y, w, h)
+    """
+    x, y, w, h = box
+    return img[y:y+h, x:x+w]
+
+
+def draw_rect(img, box):
     "Draw a red bounding box"
+    x, y, w, h = box
     cv2.rectangle(img, (x, y), (x+w, y+h), (255,0,255), 2)
+
+
+def draw_text(img, text, box, color='bw'):
+    """
+    FONT_HERSHEY_COMPLEX
+    FONT_HERSHEY_COMPLEX_SMALL
+    FONT_HERSHEY_DUPLEX
+    FONT_HERSHEY_PLAIN
+    FONT_HERSHEY_SCRIPT_COMPLEX
+    FONT_HERSHEY_SCRIPT_SIMPLEX
+    FONT_HERSHEY_SIMPLEX
+    FONT_HERSHEY_TRIPLEX
+    FONT_ITALIC
+    """
+    x, y, w, h = box
+    font = cv2.FONT_HERSHEY_DUPLEX
+    region = crop(img, box)
+    if color == 'bw':
+        brightness = np.mean(cv2.cvtColor(region, cv2.COLOR_BGR2GRAY))
+        if brightness > 127:
+            font_color = (0,0,0)
+        else:
+            font_color = (255,255,255)
+    elif color == 'color':
+        mean_bg = np.round(np.mean(region, axis=(0, 1)))
+        font_color = tuple(map(int, np.array((255,255,255)) - mean_bg))
+    else:
+        font_color = (255, 0, 0) # blue
+
+    cv2.putText(img, text, (x, y+h), font, 1, font_color, 2)
     
 
 def disp(img, pause=True):
@@ -85,6 +124,7 @@ MAX_TEXT_SIZE = 200
 UNIFORMITY_THRESH = 0.1
 THIN_LINE_THRESH = 7
 CONF_THRESH = 20
+BOX_EXPAND_FACTOR = 0.15
 HORIZONTAL_POOLING = 25
 
 
@@ -115,6 +155,7 @@ class OCREngine():
                   uniformity_thresh=UNIFORMITY_THRESH,
                   thin_line_thresh=THIN_LINE_THRESH,
                   conf_thresh=CONF_THRESH,
+                  box_expand_factor=BOX_EXPAND_FACTOR,
                   horizontal_pooling=HORIZONTAL_POOLING):
         """ 
         Generator: Blob
@@ -126,21 +167,31 @@ class OCREngine():
             - ndarray: numpy image
             - PIL.Image.Image: PIL image
           min_text_size: 
-              min text height/width in pixels, below which will be ignored
+            min text height/width in pixels, below which will be ignored
           max_text_size: 
-              max text height/width in pixels, above which will be ignored
+            max text height/width in pixels, above which will be ignored
           uniformity_thresh (0.0 < _ < 1.0): 
-              remove all black or all white regions
-              ignore a region if the number of pixels neither black nor white < [thresh]
-          thin_line_thresh: 
-              remove all lines thinner than [thresh] pixels.
-              can be used to remove the thin borders of web page textboxes. 
+            remove all black or all white regions
+            ignore a region if the number of pixels neither black nor white < [thresh]
+          thin_line_thresh (must be odd int): 
+            remove all lines thinner than [thresh] pixels.
+            can be used to remove the thin borders of web page textboxes. 
           conf_thresh (0 < _ < 100): 
-              remove all regions below [thresh] OCR confidence
+            remove all regions below [thresh] OCR confidence
+          box_expand_factor (0.0 < _ < 1.0):
+            expand the bounding box outwards in case certain chars are cutoff. 
           horizontal_pooling: 
-              result bounding boxes will be more connected with more pooling, 
-              but large pooling might lower accuracy. 
+            result bounding boxes will be more connected with more pooling, 
+            but large pooling might lower accuracy. 
         """
+        # param sanity check
+        assert max_text_size > min_text_size > 0
+        assert 0.0 <= uniformity_thresh < 1.0
+        assert thin_line_thresh % 2 == 1
+        assert 0 <= conf_thresh < 100
+        assert 0.0 <= box_expand_factor < 1.0
+        assert horizontal_pooling > 0
+        
         image = get_np_img(image) 
         img_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         img_bw = cv2.adaptiveThreshold(img_gray, 255,
@@ -158,32 +209,43 @@ class OCREngine():
                                            (horizontal_pooling, 1))
         img = cv2.morphologyEx(img, cv2.MORPH_CLOSE, kernel)
         # remove all thin textbox borders (e.g. web page textbox)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, 
-                                           (thin_line_thresh, thin_line_thresh))
-        img = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel)
+        if thin_line_thresh > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, 
+                                               (thin_line_thresh, thin_line_thresh))
+            img = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel)
         
         # http://docs.opencv.org/trunk/d9/d8b/tutorial_py_contours_hierarchy.html
         _, contours, hierarchy = cv2.findContours(img, cv2.RETR_CCOMP, 
                                                   cv2.CHAIN_APPROX_SIMPLE)
         for contour in contours:
-            x, y, w, h = cv2.boundingRect(contour)
+            x, y, w, h = box = Box(*cv2.boundingRect(contour))
             # remove regions that are beyond size limits
             if (w < min_text_size or h < min_text_size
                 or h > max_text_size):
                 continue
             # remove regions that are almost uniformly white or black
-            binary_region = img_bw[y:y+h, x:x+w]
+            binary_region = crop(img_bw, box)
             uniformity = np.count_nonzero(binary_region) / float(w * h)
             if (uniformity > 1 - uniformity_thresh 
                 or uniformity < uniformity_thresh):
                 continue
+            # expand the borders a little bit to include cutoff chars
+            expansion = int(min(h, w) * box_expand_factor)
+            x = max(0, x - expansion)
+            y = max(0, y - expansion)
+            h, w = h + 2 * expansion, w + 2 * expansion
+            if h > w: # further extend the long axis
+                h += 2 * expansion
+            elif w > h:
+                w += 2 * expansion
             # image passed to Tess should be grayscale.
             # http://stackoverflow.com/questions/15606379/python-tesseract-segmentation-fault-11
-            ocr_text, conf = self.run_tess(img_gray[y:y+h, x:x+w])
+            box = Box(x, y, w, h)
+            ocr_text, conf = self.run_tess(crop(img_gray, box))
             if conf > conf_thresh:
-                yield Blob(ocr_text, Box(x, y, w, h), conf)
-
-
+                yield Blob(ocr_text, box, conf)
+    
+    
     def _experiment_segment(self, img, 
                     min_text_size=MIN_TEXT_SIZE,
                     max_text_size=MAX_TEXT_SIZE,
@@ -310,7 +372,9 @@ if __name__ == '__main__':
         sys.exit(0)
 
     img = load_img(sys.argv[1])
-    for text, box, conf in engine.recognize(sys.argv[1]):
+    for text, box, conf in engine.recognize(sys.argv[1],
+                                            conf_thresh=50):
         print(box, conf, '\t\t', text)
-        draw_rect(img, *box)
+        draw_rect(img, box)
+        draw_text(img, text, box, color='bw')
     disp(img, 0)
