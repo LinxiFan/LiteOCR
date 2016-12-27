@@ -10,6 +10,14 @@ from tesserocr import PyTessBaseAPI, RIL, PSM, image_to_text
 from collections import namedtuple
 from IPython import embed as REPL
 
+def is_PIL(img):
+    return isinstance(img, Image.Image)
+
+
+def is_np(img):
+    return isinstance(img, np.ndarray)
+
+
 def np2PIL(img):
     "Numpy array to PIL.Image"
     return Image.fromarray(img)
@@ -17,7 +25,7 @@ def np2PIL(img):
 
 def PIL2np(img):
     "PIL.Image to numpy array"
-    assert isinstance(img, Image.Image)
+    assert is_PIL(img)
     print(img.size)
     return np.array(img.getdata()).reshape(img.size[0], img.size[1], 3)
 
@@ -40,6 +48,18 @@ def save_img(img, filename):
         cv2.imwrite(filename, img)
 
 
+def get_np_img(obj):
+    if isinstance(obj, str):
+        return load_img(obj, 'np')
+    elif is_PIL(obj):
+        return PIL2np(obj)
+    elif is_np(obj):
+        return obj
+    else:
+        raise ValueError('{} must be string (filename), ndarray, or PIL.Image'
+                         .format(obj))
+        
+        
 def draw_rect(img, x, y, w, h):
     "Draw a red bounding box"
     cv2.rectangle(img, (x, y), (x+w, y+h), (255,0,255), 2)
@@ -62,81 +82,115 @@ Blob = namedtuple('Blob', ['text', 'box', 'conf'])
 # default params
 MIN_TEXT_SIZE = 15
 MAX_TEXT_SIZE = 200
-UNIFORMITY_CUTOFF = 0.1
+UNIFORMITY_THRESH = 0.1
+THIN_LINE_THRESH = 7
+CONF_THRESH = 20
 HORIZONTAL_POOLING = 25
 
 
 class OCREngine():
-    def __init__(self, lang='eng'):
+    def __init__(self, extra_whitelist='', all_unicode=False, lang='eng'):
+        """
+        Args:
+          extra_whitelist: string of extra chars for Tesseract to consider
+              only takes effect when all_unicode is False
+          all_unicode: if True, Tess will consider all possible unicode characters
+          lang: OCR language
+        """
         self.tess = PyTessBaseAPI(psm=PSM.SINGLE_BLOCK, lang=lang)
+        if all_unicode:
+            self.whitelist_chars = None
+        else:
+            self.whitelist_chars = ("abcdefghijklmnopqrstuvwxyz"
+                                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                    "1234567890"
+                                    r"~!@#$%^&*()_+-={}|[]\:;'<>?,./" '"'
+                                    "©") + extra_whitelist
+            self.tess.SetVariable('tessedit_char_whitelist', self.whitelist_chars)
+        
     
-    def text_region(self, img, 
-                    min_text_size=MIN_TEXT_SIZE,
-                    max_text_size=MAX_TEXT_SIZE,
-                    uniformity_cutoff=UNIFORMITY_CUTOFF,
-                    horizontal_pooling=HORIZONTAL_POOLING):
+    def recognize(self, image, 
+                  min_text_size=MIN_TEXT_SIZE,
+                  max_text_size=MAX_TEXT_SIZE,
+                  uniformity_thresh=UNIFORMITY_THRESH,
+                  thin_line_thresh=THIN_LINE_THRESH,
+                  conf_thresh=CONF_THRESH,
+                  horizontal_pooling=HORIZONTAL_POOLING):
         """ 
-        Generator: segment bounding boxes of text regions
+        Generator: Blob
         http://stackoverflow.com/questions/23506105/extracting-text-opencv
         
         Args:
-          img: numpy array
-          min_text_size: min text height/width in pixels, below which will be ignored
-          max_text_size: max text height/width in pixels, above which will be ignored
-          horizontal_pooling: the larger the more connected, but shorter texts
-              might be overlooked. Tradeoff between connectedness and recall. 
+          input_image: can be one of the following types:
+            - string: image file path
+            - ndarray: numpy image
+            - PIL.Image.Image: PIL image
+          min_text_size: 
+              min text height/width in pixels, below which will be ignored
+          max_text_size: 
+              max text height/width in pixels, above which will be ignored
+          uniformity_thresh (0.0 < _ < 1.0): 
+              remove all black or all white regions
+              ignore a region if the number of pixels neither black nor white < [thresh]
+          thin_line_thresh: 
+              remove all lines thinner than [thresh] pixels.
+              can be used to remove the thin borders of web page textboxes. 
+          conf_thresh (0 < _ < 100): 
+              remove all regions below [thresh] OCR confidence
+          horizontal_pooling: 
+              result bounding boxes will be more connected with more pooling, 
+              but large pooling might lower accuracy. 
         """
-        img_init = img # preserve initial image
-        img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        image = get_np_img(image) 
+        img_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         img_bw = cv2.adaptiveThreshold(img_gray, 255,
                                        cv2.ADAPTIVE_THRESH_MEAN_C, 
                                        cv2.THRESH_BINARY, 11, 5)
-
-        img = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+        img = img_gray
         # http://docs.opencv.org/3.0-beta/doc/py_tutorials/py_imgproc/py_morphological_ops/py_morphological_ops.html
-        morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        img = cv2.morphologyEx(img, cv2.MORPH_GRADIENT, morph_kernel)
-        _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        img = cv2.morphologyEx(img, cv2.MORPH_GRADIENT, kernel)
+        # cut off all gray pixels < 30.
+        # `cv2.THRESH_BINARY | cv2.THRESH_OTSU` is also good, but might overlook certain light gray areas
+        _, img = cv2.threshold(img, 30, 255, cv2.THRESH_BINARY)
         # connect horizontally oriented regions
-        morph_kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
-                                                 (horizontal_pooling, 1))
-        img = cv2.morphologyEx(img, cv2.MORPH_CLOSE, morph_kernel)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, 
+                                           (horizontal_pooling, 1))
+        img = cv2.morphologyEx(img, cv2.MORPH_CLOSE, kernel)
+        # remove all thin textbox borders (e.g. web page textbox)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, 
+                                           (thin_line_thresh, thin_line_thresh))
+        img = cv2.morphologyEx(img, cv2.MORPH_OPEN, kernel)
+        
         # http://docs.opencv.org/trunk/d9/d8b/tutorial_py_contours_hierarchy.html
         _, contours, hierarchy = cv2.findContours(img, cv2.RETR_CCOMP, 
                                                   cv2.CHAIN_APPROX_SIMPLE)
         for contour in contours:
             x, y, w, h = cv2.boundingRect(contour)
-        
+            # remove regions that are beyond size limits
             if (w < min_text_size or h < min_text_size
                 or h > max_text_size):
                 continue
-
+            # remove regions that are almost uniformly white or black
             binary_region = img_bw[y:y+h, x:x+w]
             uniformity = np.count_nonzero(binary_region) / float(w * h)
-            if (uniformity > 1 - uniformity_cutoff 
-                or uniformity < uniformity_cutoff):
-                # ignore mostly white or black regions
-                disp(img)
+            if (uniformity > 1 - uniformity_thresh 
+                or uniformity < uniformity_thresh):
                 continue
-            # the image must be grayscale, otherwise Tesseract will SegFault
+            # image passed to Tess should be grayscale.
             # http://stackoverflow.com/questions/15606379/python-tesseract-segmentation-fault-11
-            yield img_gray[y:y+h, x:x+w], Box(x, y, w, h)
+            ocr_text, conf = self.run_tess(img_gray[y:y+h, x:x+w])
+            if conf > conf_thresh:
+                yield Blob(ocr_text, Box(x, y, w, h), conf)
 
 
-    def _text_region(self, img, 
+    def _experiment_segment(self, img, 
                     min_text_size=MIN_TEXT_SIZE,
                     max_text_size=MAX_TEXT_SIZE,
-                    uniformity_cutoff=UNIFORMITY_CUTOFF,
+                    uniformity_thresh=UNIFORMITY_THRESH,
                     horizontal_pooling=HORIZONTAL_POOLING):
         """ 
-        Generator: segment bounding boxes of text regions
-        http://stackoverflow.com/questions/23506105/extracting-text-opencv
-        
-        Args:
-          img: numpy array
-          min_text_size: minimal text height/width in pixels, below which will be ignored
-          horizontal_morph_size: the larger the more connected, but shorter texts
-              might be overlooked. Tradeoff between connectedness and recall. 
+        PRIVATE: experiment only
         """
         img_init = img # preserve initial image
         img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -151,6 +205,7 @@ class OCREngine():
         disp(img)
 #         morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 #         img = cv2.dilate(img, morph_kernel)
+        # OTSU thresholding
 #         _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
         _, img = cv2.threshold(img, 30, 255, cv2.THRESH_BINARY)
 #         img = cv2.adaptiveThreshold(img,255,cv2.ADAPTIVE_THRESH_MEAN_C,cv2.THRESH_BINARY_INV,9,2)
@@ -186,8 +241,8 @@ class OCREngine():
 
             binary_region = img_bw[y:y+h, x:x+w]
             uniformity = np.count_nonzero(binary_region) / float(w * h)
-            if (uniformity > 1 - uniformity_cutoff 
-                or uniformity < uniformity_cutoff):
+            if (uniformity > 1 - uniformity_thresh 
+                or uniformity < uniformity_thresh):
                 # ignore mostly white or black regions
 #                 print(w, h)
 #                 disp(binary_region)
@@ -199,53 +254,37 @@ class OCREngine():
         disp(img_init, 0)
 
     
-    def recognize(self, filename, **segment_kwargs):
+    def run_tess(self, img):
         """
-        **segment_kwargs: 
-            Image segmentation settings:
-            - min_text_size
-            - max_text_size
-            - uniformity_cutoff
-            - horizontal_pooling
-            please refer to OCREngine.text_region()
+        Tesseract python API source code:
+        https://github.com/sirfz/tesserocr/blob/master/tesserocr.pyx
+        
+        Returns:
+          (ocr_text, confidence)
         """
-        img = load_img(filename, 'np')
-        idx = 0 
-        for region, box in self.text_region(img, **segment_kwargs):
-            print(idx)
-#             if idx == 11: disp(region)
-            idx +=1
-            region = np2PIL(region)
-            self.tess.SetImage(region)
-#             print(self.tess.Recognize())
+        if isinstance(img, np.ndarray):
+            img = np2PIL(img)
+        self.tess.SetImage(img)
+        ocr_text = self.tess.GetUTF8Text().strip()
+        conf = self.tess.MeanTextConf()
+        return ocr_text, conf
+    
+    
+    def _deprec_run_tess(self, img):
+        "GetComponentImages throws SegFault randomly. No way to fix. :("
+        if isinstance(img, np.ndarray):
+            img = np2PIL(img)
+
+        components = self.tess.GetComponentImages(RIL.TEXTLINE, True)
+        for _, inner_box, block_id, paragraph_id in components:
+            # box is a dict with x, y, w and h keys
+            inner_box = Box(**inner_box)
+            if inner_box.w < MIN_TEXT_SIZE or inner_box.h < MIN_TEXT_SIZE:
+                continue
+            self.tess.SetRectangle(*inner_box)
             ocr_text = self.tess.GetUTF8Text().strip()
             conf = self.tess.MeanTextConf()
-            yield Blob(ocr_text, box, conf)
-    
-    
-    def _deprec_recognize(self, filename, min_text_size=10, max_text_size=60):
-        "GetComponentImages throws SegFault randomly. No way to fix. :("
-        img = load_img(filename, 'np')
-        for region, outer_box in self.text_region(img, 
-                                                  min_text_size=min_text_size,
-                                                  max_text_size=max_text_size):
-            region = np2PIL(region)
-            self.tess.SetImage(region)
-            components = self.tess.GetComponentImages(RIL.TEXTLINE, True)
-            print('Found {} textline image components.'.format(len(components)))
-            for _, inner_box, block_id, paragraph_id in components:
-                # box is a dict with x, y, w and h keys
-                inner_box = Box(**inner_box)
-                if inner_box.w < min_text_size or inner_box.h < min_text_size:
-                    continue
-                self.tess.SetRectangle(*inner_box)
-                ocr_text = self.tess.GetUTF8Text().strip()
-                conf = self.tess.MeanTextConf()
-                # global coordinate in the image
-                global_box = Box(outer_box.x + inner_box.x,
-                                 outer_box.y + inner_box.y,
-                                 inner_box.w, inner_box.h)
-                yield Blob(ocr_text, global_box, conf)
+            return ocr_text, inner_box, conf
     
     
     def close(self):
@@ -261,9 +300,9 @@ class OCREngine():
 
 
 if __name__ == '__main__':
-    engine = OCREngine()
-    if 1:
-        engine._text_region(load_img(sys.argv[1]))
+    engine = OCREngine(all_unicode=False)
+    if 0:
+        engine._experiment_segment(load_img(sys.argv[1]))
         sys.exit()
 
     if 0:
