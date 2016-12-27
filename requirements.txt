@@ -1,4 +1,4 @@
-BeautifulSoup4
 numpy
 pillow
-matplotlib
+tesserocr
+opencv-python

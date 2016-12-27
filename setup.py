@@ -3,16 +3,19 @@
 '''
 import os
 from setuptools import setup
-# Utility function to read the README file.
+
 def read(fname):
-    return open(os.path.join(os.path.dirname(__file__), fname)).read()
+    with open(os.path.join(os.path.dirname(__file__), fname)) as f:
+        return f.read()
+
 
 setup(name='liteocr',
-      version='0.1',
+      version='0.1.0.post0',
       author='Linxi (Jim) Fan',
+      author_email='jimfan@cs.stanford.edu',
       url='http://github.com/LinxiFan/LiteOCR',
       description='Light-weight OCR engine.',
-      long_description=read('README.md'),
+      long_description=read('README.rst'),
       keywords='OCR image recognition wrapper Tesseract',
       license='GPLv3',
       packages=['liteocr'],
@@ -23,5 +26,7 @@ setup(name='liteocr',
           "Environment :: Console",
           "Programming Language :: Python :: 3.5"
       ],
+      install_requires=read('requirements.txt').strip().splitlines(),
+      include_package_data=True,
       zip_safe=False
 )

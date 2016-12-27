@@ -1,1 +1,1 @@
-from liteocr.ocr import *
+from .ocr import *
