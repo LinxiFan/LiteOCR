@@ -127,6 +127,7 @@ CONF_THRESH = 20
 BOX_EXPAND_FACTOR = 0.15
 HORIZONTAL_POOLING = 25
 
+PSM_MODE = PSM.AUTO # better than PSM.SINGLE_BLOCK
 
 class OCREngine():
     def __init__(self, extra_whitelist='', all_unicode=False, lang='eng'):
@@ -137,7 +138,7 @@ class OCREngine():
           all_unicode: if True, Tess will consider all possible unicode characters
           lang: OCR language
         """
-        self.tess = PyTessBaseAPI(psm=PSM.SINGLE_BLOCK, lang=lang)
+        self.tess = PyTessBaseAPI(psm=PSM_MODE, lang=lang)
         if all_unicode:
             self.whitelist_chars = None
         else:
@@ -359,22 +360,3 @@ class OCREngine():
 
     def __exit__( self, type, value, traceback):
         self.close()
-
-
-if __name__ == '__main__':
-    engine = OCREngine(all_unicode=False)
-    if 0:
-        engine._experiment_segment(load_img(sys.argv[1]))
-        sys.exit()
-
-    if 0:
-        engine.recognize(sys.argv[1])
-        sys.exit(0)
-
-    img = load_img(sys.argv[1])
-    for text, box, conf in engine.recognize(sys.argv[1],
-                                            conf_thresh=50):
-        print(box, conf, '\t\t', text)
-        draw_rect(img, box)
-        draw_text(img, text, box, color='bw')
-    disp(img, 0)
