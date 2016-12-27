@@ -1,0 +1,1 @@
+from liteocr.ocr import *
