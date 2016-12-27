@@ -140,7 +140,7 @@ class HOCR():
             # Create an element cache.
             self._cache = {}
             CLASSES = {
-                'words': {'name': 'liteocr.?_word', 'class': HOCR.Word},
+                'words': {'name': 'ocr.?_word', 'class': HOCR.Word},
                 'lines': {'name': 'ocr_line', 'class': HOCR.Line},
                 'paragraphs': {'name': 'ocr_par', 'class': HOCR.Paragraph},
                 'blocks': {'name': 'ocr_carea', 'class': HOCR.Block}
