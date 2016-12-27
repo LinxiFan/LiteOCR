@@ -126,7 +126,8 @@ CONF_THRESH = 20
 BOX_EXPAND_FACTOR = 0.15
 HORIZONTAL_POOLING = 25
 
-PSM_MODE = PSM.AUTO # better than PSM.SINGLE_BLOCK
+PSM_MODE = PSM.AUTO
+# PSM_MODE = PSM.SINGLE_BLOCK
 
 class OCREngine():
     def __init__(self, extra_whitelist='', all_unicode=False, lang='eng'):
@@ -346,7 +347,7 @@ class OCREngine():
             self.tess.SetRectangle(*inner_box)
             ocr_text = self.tess.GetUTF8Text().strip()
             conf = self.tess.MeanTextConf()
-            return ocr_text, inner_box, conf
+            yield ocr_text, inner_box, conf
     
     
     def close(self):
