@@ -59,16 +59,75 @@ Box = namedtuple('Box', ['x', 'y', 'w', 'h'])
 # Recognition result
 Blob = namedtuple('Blob', ['text', 'box', 'conf'])
 
+# default params
+MIN_TEXT_SIZE = 15
+MAX_TEXT_SIZE = 200
+UNIFORMITY_CUTOFF = 0.1
+HORIZONTAL_POOLING = 25
+
 
 class OCREngine():
     def __init__(self, lang='eng'):
         self.tess = PyTessBaseAPI(psm=PSM.SINGLE_BLOCK, lang=lang)
     
     def text_region(self, img, 
-                    min_text_size=10,
-                    max_text_size=60,
-                    uniformity_cutoff=0.1,
-                    horizontal_morph_size=25):
+                    min_text_size=MIN_TEXT_SIZE,
+                    max_text_size=MAX_TEXT_SIZE,
+                    uniformity_cutoff=UNIFORMITY_CUTOFF,
+                    horizontal_pooling=HORIZONTAL_POOLING):
+        """ 
+        Generator: segment bounding boxes of text regions
+        http://stackoverflow.com/questions/23506105/extracting-text-opencv
+        
+        Args:
+          img: numpy array
+          min_text_size: min text height/width in pixels, below which will be ignored
+          max_text_size: max text height/width in pixels, above which will be ignored
+          horizontal_pooling: the larger the more connected, but shorter texts
+              might be overlooked. Tradeoff between connectedness and recall. 
+        """
+        img_init = img # preserve initial image
+        img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img_bw = cv2.adaptiveThreshold(img_gray, 255,
+                                       cv2.ADAPTIVE_THRESH_MEAN_C, 
+                                       cv2.THRESH_BINARY, 11, 5)
+
+        img = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+        # http://docs.opencv.org/3.0-beta/doc/py_tutorials/py_imgproc/py_morphological_ops/py_morphological_ops.html
+        morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        img = cv2.morphologyEx(img, cv2.MORPH_GRADIENT, morph_kernel)
+        _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        # connect horizontally oriented regions
+        morph_kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
+                                                 (horizontal_pooling, 1))
+        img = cv2.morphologyEx(img, cv2.MORPH_CLOSE, morph_kernel)
+        # http://docs.opencv.org/trunk/d9/d8b/tutorial_py_contours_hierarchy.html
+        _, contours, hierarchy = cv2.findContours(img, cv2.RETR_CCOMP, 
+                                                  cv2.CHAIN_APPROX_SIMPLE)
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+        
+            if (w < min_text_size or h < min_text_size
+                or h > max_text_size):
+                continue
+
+            binary_region = img_bw[y:y+h, x:x+w]
+            uniformity = np.count_nonzero(binary_region) / float(w * h)
+            if (uniformity > 1 - uniformity_cutoff 
+                or uniformity < uniformity_cutoff):
+                # ignore mostly white or black regions
+                disp(img)
+                continue
+            # the image must be grayscale, otherwise Tesseract will SegFault
+            # http://stackoverflow.com/questions/15606379/python-tesseract-segmentation-fault-11
+            yield img_gray[y:y+h, x:x+w], Box(x, y, w, h)
+
+
+    def _text_region(self, img, 
+                    min_text_size=MIN_TEXT_SIZE,
+                    max_text_size=MAX_TEXT_SIZE,
+                    uniformity_cutoff=UNIFORMITY_CUTOFF,
+                    horizontal_pooling=HORIZONTAL_POOLING):
         """ 
         Generator: segment bounding boxes of text regions
         http://stackoverflow.com/questions/23506105/extracting-text-opencv
@@ -89,16 +148,37 @@ class OCREngine():
         # http://docs.opencv.org/3.0-beta/doc/py_tutorials/py_imgproc/py_morphological_ops/py_morphological_ops.html
         morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         img = cv2.morphologyEx(img, cv2.MORPH_GRADIENT, morph_kernel)
-        _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        disp(img)
+#         morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+#         img = cv2.dilate(img, morph_kernel)
+#         _, img = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        _, img = cv2.threshold(img, 30, 255, cv2.THRESH_BINARY)
+#         img = cv2.adaptiveThreshold(img,255,cv2.ADAPTIVE_THRESH_MEAN_C,cv2.THRESH_BINARY_INV,9,2)
+        disp(img)
         # connect horizontally oriented regions
         morph_kernel = cv2.getStructuringElement(cv2.MORPH_RECT,
-                                                 (horizontal_morph_size, 1))
+                                                 (horizontal_pooling, 1))
         img = cv2.morphologyEx(img, cv2.MORPH_CLOSE, morph_kernel)
+        disp(img)
+        
+        if 0:
+            morph_kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (horizontal_pooling, 3))
+            img = cv2.erode(img, morph_kernel, iterations=1)
+            disp(img)
+            morph_kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (6, 6))
+            img = cv2.dilate(img, morph_kernel, iterations=1)
+        elif 1:
+            morph_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+            img = cv2.morphologyEx(img, cv2.MORPH_OPEN, morph_kernel)
+        disp(img)
+
         # http://docs.opencv.org/trunk/d9/d8b/tutorial_py_contours_hierarchy.html
         _, contours, hierarchy = cv2.findContours(img, cv2.RETR_CCOMP, 
                                                   cv2.CHAIN_APPROX_SIMPLE)
+        img_copy = np.copy(img_init)
         for contour in contours:
             x, y, w, h = cv2.boundingRect(contour)
+            draw_rect(img_copy, x, y, w, h)
         
             if (w < min_text_size or h < min_text_size
                 or h > max_text_size):
@@ -109,55 +189,46 @@ class OCREngine():
             if (uniformity > 1 - uniformity_cutoff 
                 or uniformity < uniformity_cutoff):
                 # ignore mostly white or black regions
+#                 print(w, h)
+#                 disp(binary_region)
                 continue
             # the image must be grayscale, otherwise Tesseract will SegFault
             # http://stackoverflow.com/questions/15606379/python-tesseract-segmentation-fault-11
-            yield img_gray[y:y+h, x:x+w], Box(x, y, w, h)
+            draw_rect(img_init, x, y, w, h)
+        disp(img_copy)
+        disp(img_init, 0)
 
     
-    def recognize(self, filename, min_text_size=10, max_text_size=60):
+    def recognize(self, filename, **segment_kwargs):
+        """
+        **segment_kwargs: 
+            Image segmentation settings:
+            - min_text_size
+            - max_text_size
+            - uniformity_cutoff
+            - horizontal_pooling
+            please refer to OCREngine.text_region()
+        """
         img = load_img(filename, 'np')
         idx = 0 
-        for region, outer_box in self.text_region(img, 
-                                                  min_text_size=min_text_size,
-                                                  max_text_size=max_text_size):
+        for region, box in self.text_region(img, **segment_kwargs):
             print(idx)
 #             if idx == 11: disp(region)
             idx +=1
             region = np2PIL(region)
-            with PyTessBaseAPI(psm=PSM.SINGLE_BLOCK) as self.tess:
-                self.tess.SetImage(region)
-                print(self.tess.GetUTF8Text(), self.tess.BoundingBox(RIL.TEXTLINE), self.tess.MeanTextConf())
-                continue
-    #             print('succesful set image', region.size)
-    #             print(image_to_text(region))
-    #             continue
-                components = self.tess.GetComponentImages(RIL.TEXTLINE, True)
-                print('Found {} textline image components.'.format(len(components)))
-                for _, inner_box, block_id, paragraph_id in components:
-                    # box is a dict with x, y, w and h keys
-                    inner_box = Box(**inner_box)
-                    if inner_box.w < min_text_size or inner_box.h < min_text_size:
-                        continue
-                    self.tess.SetRectangle(*inner_box)
-                    ocr_text = self.tess.GetUTF8Text().strip()
-                    conf = self.tess.MeanTextConf()
-                    # global coordinate in the image
-                    global_box = Box(outer_box.x + inner_box.x,
-                                     outer_box.y + inner_box.y,
-                                     inner_box.w, inner_box.h)
-    #                 yield Blob(ocr_text, global_box, conf)
+            self.tess.SetImage(region)
+#             print(self.tess.Recognize())
+            ocr_text = self.tess.GetUTF8Text().strip()
+            conf = self.tess.MeanTextConf()
+            yield Blob(ocr_text, box, conf)
     
     
     def _deprec_recognize(self, filename, min_text_size=10, max_text_size=60):
+        "GetComponentImages throws SegFault randomly. No way to fix. :("
         img = load_img(filename, 'np')
-        idx = 0 
         for region, outer_box in self.text_region(img, 
                                                   min_text_size=min_text_size,
                                                   max_text_size=max_text_size):
-#             print(idx)
-#             if idx == 11: disp(region)
-#             idx +=1
             region = np2PIL(region)
             self.tess.SetImage(region)
             components = self.tess.GetComponentImages(RIL.TEXTLINE, True)
@@ -191,14 +262,16 @@ class OCREngine():
 
 if __name__ == '__main__':
     engine = OCREngine()
-#     engine.text_region(load_img(sys.argv[1]))
+    if 1:
+        engine._text_region(load_img(sys.argv[1]))
+        sys.exit()
 
-    if False:
+    if 0:
         engine.recognize(sys.argv[1])
         sys.exit(0)
 
     img = load_img(sys.argv[1])
-    for text, box, conf in engine._deprec_recognize(sys.argv[1]):
+    for text, box, conf in engine.recognize(sys.argv[1]):
         print(box, conf, '\t\t', text)
         draw_rect(img, *box)
-    disp(img)
+    disp(img, 0)
