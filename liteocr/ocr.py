@@ -37,6 +37,7 @@ def PIL2np(img):
 
 
 def load_img(filename, format='np'):
+    assert os.path.exists(filename), 'image file {} does not exist'.format(filename)
     format = format.lower()
     if format == 'np':
         return cv2.imread(filename)
