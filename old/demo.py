@@ -7,7 +7,7 @@ import numpy as np
 import cv2
 import subprocess
 
-from old_ocr import OCREngine
+from ocr import OCREngine
 
 IMG = sys.argv[1]
 COLOR = {
