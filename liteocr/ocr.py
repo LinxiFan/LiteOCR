@@ -147,6 +147,7 @@ class OCREngine():
           lang: OCR language
         """
         self.tess = PyTessBaseAPI(psm=PSM_MODE, lang=lang)
+        self.is_closed = False
         if all_unicode:
             self.whitelist_chars = None
         else:
@@ -156,6 +157,11 @@ class OCREngine():
                                     r"~!@#$%^&*()_+-={}|[]\:;'<>?,./" '"'
                                     "©") + extra_whitelist
             self.tess.SetVariable('tessedit_char_whitelist', self.whitelist_chars)
+    
+    
+    def check_engine(self):
+        if self.is_closed:
+            raise RuntimeError('OCREngine has been closed.')
         
     
     def recognize(self, image, 
@@ -193,6 +199,7 @@ class OCREngine():
             result bounding boxes will be more connected with more pooling, 
             but large pooling might lower accuracy. 
         """
+        self.check_engine()
         # param sanity check
         assert max_text_size > min_text_size > 0
         assert 0.0 <= uniformity_thresh < 1.0
@@ -360,6 +367,7 @@ class OCREngine():
     
     def close(self):
         self.tess.End()
+        self.is_closed = True
         
     
     def __enter__( self ):
